@@ -1,18 +1,16 @@
 import streamlit as st
-import pandas as pd
+import yfinance as yf
 
 st.set_page_config(page_title="Personal Finance", layout="wide")
 st.title("Personal Finance Dashboard")
 
-import yfinance as yf 
+
 
 tickers = st.selectbox("Select Ticker", ["MSFT", "AAPL", "GOOGL"])
 dat = yf.Ticker(tickers)
 
 
-
-
-stock_history = dat.history(period='1y')
+stock_history = dat.history(period="1y")
 st.write("attempting to load data")
 # st.write(stock_history)
 
