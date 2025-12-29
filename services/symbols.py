@@ -1,1 +1,0 @@
-SYMBOLS = ["MSFT", "AAPL", "GOOGL"]
