@@ -9,6 +9,7 @@ from services.portfolio_service import (
     calculate_portfolio_history,
     get_position_performance,
 )
+from services.stock_service import get_errors, clear_errors
 
 st.set_page_config(page_title="Personal Finance", layout="wide")
 st.title("Personal Finance Dashboard")
@@ -44,8 +45,26 @@ with tab1:
         st.info("No positions yet. Add your first position above!")
     else:
         # Enrich portfolio with calculated fields
+        clear_errors()  # Clear previous errors
         with st.spinner("Fetching prices and calculating metrics..."):
             enriched = enrich_portfolio(portfolio)
+        
+        # Check for errors and display warnings
+        errors = get_errors()
+        if errors:
+            if any("Rate" in err or "Too Many" in err for err in errors):
+                st.warning(
+                    "⚠️ Yahoo Finance rate limit reached. "
+                    "Prices may be incomplete. Please wait a few minutes and refresh."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Encountered {len(errors)} error(s) fetching prices. "
+                    "Some data may be incomplete."
+                )
+            with st.expander("View error details"):
+                for error in errors:
+                    st.text(error)
 
         # Select columns to display
         display_cols = [
@@ -173,8 +192,23 @@ with tab2:
         st.info("Add some positions in the Portfolio Management tab to see analysis.")
     else:
         # Enrich portfolio for performance metrics
+        clear_errors()  # Clear previous errors
         with st.spinner("Calculating portfolio metrics..."):
             enriched = enrich_portfolio(portfolio)
+        
+        # Check for errors
+        errors = get_errors()
+        if errors:
+            if any("Rate" in err or "Too Many" in err for err in errors):
+                st.warning(
+                    "⚠️ Yahoo Finance rate limit reached. "
+                    "Analysis may be incomplete. Please wait a few minutes and refresh."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Encountered {len(errors)} error(s) fetching data. "
+                    "Analysis may be incomplete."
+                )
 
         # Display summary metrics at top
         st.subheader("Overall Performance")
@@ -202,8 +236,17 @@ with tab2:
 
         # Net Worth Over Time Chart
         st.subheader("Portfolio Value Over Time")
+        clear_errors()  # Clear errors before history calculation
         with st.spinner("Calculating historical portfolio values..."):
             history = calculate_portfolio_history(portfolio)
+        
+        # Check for errors during history calculation
+        history_errors = get_errors()
+        if history_errors:
+            st.warning(
+                "⚠️ Some historical prices could not be fetched. "
+                "Chart may have gaps or missing data."
+            )
 
         if not history.empty:
             render_portfolio_chart(history)

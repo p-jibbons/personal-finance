@@ -8,6 +8,8 @@ from app.services.portfolio_service import (
     save_portfolio,
     add_position,
     delete_position,
+    enrich_portfolio,
+    get_position_performance,
 )
 
 
@@ -228,3 +230,225 @@ class TestPortfolioDataIntegrity:
         df = load_portfolio()
 
         assert df.loc[0, "sell_date"] == ""
+
+
+class TestEnrichPortfolio:
+    """Tests for enrich_portfolio function."""
+
+    @pytest.fixture
+    def mock_prices(self, monkeypatch):
+        """Mock stock price functions to return fixed values."""
+
+        def mock_get_close_price(symbol, date):
+            # Return different prices based on symbol and date
+            prices = {
+                "AAPL": {"2024-01-01": 150.0, "2024-06-01": 180.0},
+                "MSFT": {"2024-02-01": 300.0, "2024-07-01": 280.0},
+                "GOOGL": {"2024-03-01": 140.0},
+            }
+            return prices.get(symbol, {}).get(date, 100.0)
+
+        def mock_get_current_price(symbol):
+            # Return current prices
+            current_prices = {"AAPL": 200.0, "MSFT": 350.0, "GOOGL": 160.0}
+            return current_prices.get(symbol, 100.0)
+
+        monkeypatch.setattr(
+            "app.services.portfolio_service.get_close_price", mock_get_close_price
+        )
+        monkeypatch.setattr(
+            "app.services.portfolio_service.get_current_price",
+            mock_get_current_price,
+        )
+
+    def test_enrich_empty_portfolio(self):
+        """Test enriching an empty portfolio."""
+        df = pd.DataFrame(
+            {
+                "symbol": pd.Series(dtype="str"),
+                "buy_date": pd.Series(dtype="str"),
+                "shares": pd.Series(dtype="float"),
+                "sell_date": pd.Series(dtype="str"),
+            }
+        )
+        enriched = enrich_portfolio(df)
+        assert enriched.empty
+
+    def test_enrich_open_position(self, mock_prices):
+        """Test enriching an open position with current price."""
+        df = pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "buy_date": ["2024-01-01"],
+                "shares": [10.0],
+                "sell_date": [""],
+            }
+        )
+
+        enriched = enrich_portfolio(df)
+
+        assert enriched.loc[0, "buy_price"] == 150.0
+        assert enriched.loc[0, "current_price"] == 200.0
+        assert enriched.loc[0, "cost_basis"] == 1500.0  # 10 * 150
+        assert enriched.loc[0, "current_value"] == 2000.0  # 10 * 200
+        assert enriched.loc[0, "gain_loss"] == 500.0  # 2000 - 1500
+        assert enriched.loc[0, "gain_loss_pct"] == pytest.approx(33.33, rel=0.01)
+        assert enriched.loc[0, "status"] == "Open"
+        assert enriched.loc[0, "sell_price"] == 0.0
+        assert enriched.loc[0, "sold_value"] == 0.0
+
+    def test_enrich_closed_position(self, mock_prices):
+        """Test enriching a closed position with sell price."""
+        df = pd.DataFrame(
+            {
+                "symbol": ["MSFT"],
+                "buy_date": ["2024-02-01"],
+                "shares": [5.0],
+                "sell_date": ["2024-07-01"],
+            }
+        )
+
+        enriched = enrich_portfolio(df)
+
+        assert enriched.loc[0, "buy_price"] == 300.0
+        assert enriched.loc[0, "sell_price"] == 280.0
+        assert enriched.loc[0, "cost_basis"] == 1500.0  # 5 * 300
+        assert enriched.loc[0, "sold_value"] == 1400.0  # 5 * 280
+        assert enriched.loc[0, "gain_loss"] == -100.0  # 1400 - 1500
+        assert enriched.loc[0, "gain_loss_pct"] == pytest.approx(-6.67, rel=0.01)
+        assert enriched.loc[0, "status"] == "Closed"
+        assert enriched.loc[0, "current_price"] == 0.0
+        assert enriched.loc[0, "current_value"] == 0.0
+
+    def test_enrich_multiple_positions(self, mock_prices):
+        """Test enriching portfolio with multiple positions."""
+        df = pd.DataFrame(
+            {
+                "symbol": ["AAPL", "MSFT", "GOOGL"],
+                "buy_date": ["2024-01-01", "2024-02-01", "2024-03-01"],
+                "shares": [10.0, 5.0, 8.0],
+                "sell_date": ["", "2024-07-01", ""],
+            }
+        )
+
+        enriched = enrich_portfolio(df)
+
+        assert len(enriched) == 3
+        assert enriched.loc[0, "status"] == "Open"
+        assert enriched.loc[1, "status"] == "Closed"
+        assert enriched.loc[2, "status"] == "Open"
+
+        # Check AAPL (open)
+        assert enriched.loc[0, "gain_loss"] == 500.0
+
+        # Check MSFT (closed, loss)
+        assert enriched.loc[1, "gain_loss"] == -100.0
+
+        # Check GOOGL (open)
+        assert enriched.loc[2, "cost_basis"] == 1120.0  # 8 * 140
+        assert enriched.loc[2, "current_value"] == 1280.0  # 8 * 160
+
+    def test_enrich_zero_cost_basis(self, mock_prices):
+        """Test that zero cost basis doesn't cause division errors."""
+        df = pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "buy_date": ["2024-01-01"],
+                "shares": [0.0],
+                "sell_date": [""],
+            }
+        )
+
+        enriched = enrich_portfolio(df)
+
+        assert enriched.loc[0, "cost_basis"] == 0.0
+        assert enriched.loc[0, "gain_loss_pct"] == 0.0
+
+
+class TestGetPositionPerformance:
+    """Tests for get_position_performance function."""
+
+    def test_performance_empty_portfolio(self):
+        """Test performance analysis with empty portfolio."""
+        df = pd.DataFrame()
+        result = get_position_performance(df)
+
+        assert result["top_gainers"].empty
+        assert result["top_losers"].empty
+
+    def test_performance_single_position(self):
+        """Test performance analysis with single position."""
+        df = pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "shares": [10.0],
+                "cost_basis": [1500.0],
+                "current_value": [2000.0],
+                "sold_value": [0.0],
+                "gain_loss": [500.0],
+                "gain_loss_pct": [33.33],
+                "status": ["Open"],
+            }
+        )
+
+        result = get_position_performance(df)
+
+        assert len(result["top_gainers"]) == 1
+        assert len(result["top_losers"]) == 1
+        assert result["top_gainers"].loc[0, "symbol"] == "AAPL"
+
+    def test_performance_sorting(self):
+        """Test that positions are sorted correctly by gain/loss percentage."""
+        df = pd.DataFrame(
+            {
+                "symbol": ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"],
+                "shares": [10.0, 5.0, 8.0, 3.0, 6.0],
+                "cost_basis": [1000.0] * 5,
+                "current_value": [1500.0, 800.0, 1200.0, 1100.0, 900.0],
+                "sold_value": [0.0] * 5,
+                "gain_loss": [500.0, -200.0, 200.0, 100.0, -100.0],
+                "gain_loss_pct": [50.0, -20.0, 20.0, 10.0, -10.0],
+                "status": ["Open"] * 5,
+            }
+        )
+
+        result = get_position_performance(df)
+
+        # Top gainers should be sorted descending
+        assert result["top_gainers"].iloc[0]["symbol"] == "AAPL"  # 50%
+        assert result["top_gainers"].iloc[1]["symbol"] == "GOOGL"  # 20%
+        assert result["top_gainers"].iloc[2]["symbol"] == "TSLA"  # 10%
+
+        # Top losers should be sorted ascending (most negative first)
+        assert result["top_losers"].iloc[0]["symbol"] == "MSFT"  # -20%
+        assert result["top_losers"].iloc[1]["symbol"] == "AMZN"  # -10%
+
+    def test_performance_max_five_positions(self):
+        """Test that only top 5 gainers and losers are returned."""
+        # Create 10 positions
+        symbols = [f"SYM{i}" for i in range(10)]
+        percentages = list(range(-50, 50, 10))  # -50, -40, ..., 30, 40
+
+        df = pd.DataFrame(
+            {
+                "symbol": symbols,
+                "shares": [10.0] * 10,
+                "cost_basis": [1000.0] * 10,
+                "current_value": [1000.0] * 10,
+                "sold_value": [0.0] * 10,
+                "gain_loss": [0.0] * 10,
+                "gain_loss_pct": percentages,
+                "status": ["Open"] * 10,
+            }
+        )
+
+        result = get_position_performance(df)
+
+        assert len(result["top_gainers"]) == 5
+        assert len(result["top_losers"]) == 5
+
+        # Check top gainer is the highest percentage
+        assert result["top_gainers"].iloc[0]["gain_loss_pct"] == 40.0
+
+        # Check top loser is the lowest percentage
+        assert result["top_losers"].iloc[0]["gain_loss_pct"] == -50.0

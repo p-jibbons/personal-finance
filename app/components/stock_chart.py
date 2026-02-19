@@ -21,4 +21,4 @@ def render_portfolio_chart(portfolio_history: pd.DataFrame):
     # Set date as index for better chart display
     chart_data = portfolio_history.set_index("date")
 
-    st.line_chart(chart_data["portfolio_value"], use_container_width=True)
+    st.line_chart(chart_data["portfolio_value"], width="stretch")
